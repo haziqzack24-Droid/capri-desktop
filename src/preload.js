@@ -1,75 +1,112 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+/**
+ * Android WebView JavaScript Bridge Replacement for Electron contextBridge
+ * This maps the desktop RPC calls to Android's window.Android interface (or standard WebSockets/fetch if hosted via a local server).
+ */
 
-const on = (channel) => (fn) => {
-  const listener = (_e, payload) => fn(payload);
-  ipcRenderer.on(channel, listener);
-  return () => ipcRenderer.removeListener(channel, listener);
+const createListener = (eventName) => (fn) => {
+  // On Android, events from native can be dispatched via custom window events
+  const listener = (e) => fn(e.detail);
+  window.addEventListener(eventName, listener);
+  return () => window.removeEventListener(eventName, listener);
 };
 
-contextBridge.exposeInMainWorld('host', {
-  onClaudeEvent: on('claude:event'),
-  onCommand: on('capri:command'),
-  onConfig: on('capri:config'),
-  onResize: on('overlay:resize'),
-  onWindows: on('windows:update'),
-  setInteractive: (on) => ipcRenderer.send('overlay:interactive', Boolean(on)),
-  rearm: () => ipcRenderer.send('overlay:rearm'),
-  cursor: () => ipcRenderer.invoke('overlay:cursor'),
-  screens: () => ipcRenderer.invoke('screens:list'),
-  moveScreen: (id) => ipcRenderer.invoke('screens:move', id),
-  getConfig: () => ipcRenderer.invoke('config:get'),
-  setConfig: (patch) => ipcRenderer.invoke('config:set', patch),
-  listSounds: () => ipcRenderer.invoke('sounds:list'),
-  hooksStatus: () => ipcRenderer.invoke('hooks:status'),
-  demoWindow: (open) => ipcRenderer.invoke('demo:window', Boolean(open)),
-  openMenu: () => ipcRenderer.send('menu:open'),
-  installHooks: () => ipcRenderer.invoke('hooks:install'),
-  claudeFound: () => ipcRenderer.invoke('claude:found'),
-  openClaudeHelp: () => ipcRenderer.send('claude:help'),
-  windowsNow: () => ipcRenderer.invoke('windows:get'),
-  closePage: (id, key) => ipcRenderer.invoke('windows:closePage', { id, key }),
-  trayPlace: () => ipcRenderer.invoke('guide:tray'),
-  openClaudeFolder: () => ipcRenderer.invoke('guide:claudeFolder'),
-  copyImage: (rect) => ipcRenderer.invoke('panel:copy', rect),
-  chatStatus: () => ipcRenderer.invoke('chat:status'),
-  chatSend: (request) => ipcRenderer.invoke('chat:send', request),
-  chatStop: (id) => ipcRenderer.send('chat:stop', id),
-  chatMemory: () => ipcRenderer.invoke('chat:memory'),
-  chatRemember: (history) => ipcRenderer.send('chat:remember', history),
-  onChatDelta: on('chat:delta'),
-  lookSnap: () => ipcRenderer.invoke('look:snap'),
-  lookSay: (request) => ipcRenderer.invoke('look:say', request),
-  lookWhere: () => ipcRenderer.invoke('look:where'),
-  cpu: () => ipcRenderer.invoke('pc:cpu'),
-  pcDo: (req) => ipcRenderer.invoke('pc:do', req),
-  onPcProgress: on('pc:progress'),
-  pcIdle: () => ipcRenderer.invoke('pc:idle'),
-  openOllama: () => ipcRenderer.send('chat:ollama'),
-  setupInfo: () => ipcRenderer.invoke('setup:info'),
-  ollamaState: () => ipcRenderer.invoke('setup:ollama'),
-  installOllama: () => ipcRenderer.invoke('setup:install'),
-  startOllama: () => ipcRenderer.invoke('setup:start'),
-  pullModel: (name) => ipcRenderer.invoke('setup:pull', name),
-  cancelSetup: () => ipcRenderer.send('setup:cancel'),
-  useProvider: (choice) => ipcRenderer.invoke('setup:use', choice),
-  keyPage: (provider) => ipcRenderer.send('setup:keyPage', provider),
-  launchThroughOllama: (integration) => ipcRenderer.invoke('setup:launch', integration),
-  onSetupProgress: on('setup:progress'),
-  openApps: () => ipcRenderer.invoke('apps:list'),
-  findApp: (wanted) => ipcRenderer.invoke('apps:find', wanted),
-  closeApp: (name, force) => ipcRenderer.invoke('apps:close', { name, force: Boolean(force) }),
-  findLaunch: (text) => ipcRenderer.invoke('apps:findLaunch', text),
-  launch: (item) => ipcRenderer.invoke('apps:launch', item),
-  media: (action) => ipcRenderer.invoke('apps:media', action),
-  music: (query) => ipcRenderer.invoke('apps:music', query),
-  youtube: (query) => ipcRenderer.invoke('apps:youtube', query),
-  roblox: (query) => ipcRenderer.invoke('apps:roblox', query),
-  searchFiles: (query) => ipcRenderer.invoke('files:search', query),
-  openFile: (file, reveal) => ipcRenderer.invoke('files:open', { file, reveal }),
-  screenshot: () => ipcRenderer.invoke('files:screenshot'),
-  webSearch: (query) => ipcRenderer.invoke('web:search', query),
-  openSite: (address) => ipcRenderer.invoke('apps:site', address),
-  focusOverlay: (on) => ipcRenderer.send('overlay:focus', Boolean(on)),
-});
+// Helper to call native Android interfaces safely
+const callNative = (methodName, ...args) => {
+  if (window.Android && typeof window.Android[methodName] === 'function') {
+    // If Android interface returns a JSON string or promise
+    const result = window.Android[methodName](...args);
+    try {
+      return Promise.resolve(JSON.parse(result));
+    } catch {
+      return Promise.resolve(result);
+    }
+  }
+  return Promise.reject(new Error(`Android interface method '${methodName}' not found.`));
+};
+
+const sendNative = (methodName, ...args) => {
+  if (window.Android && typeof window.Android[methodName] === 'function') {
+    window.Android[methodName](...args);
+  }
+};
+
+window.host = {
+  // Event listeners (mapped to window CustomEvents dispatched from native Android code)
+  onClaudeEvent: createListener('claude:event'),
+  onCommand: createListener('capri:command'),
+  onConfig: createListener('capri:config'),
+  onResize: createListener('overlay:resize'),
+  onWindows: createListener('windows:update'),
+
+  // Actions & Commands
+  setInteractive: (on) => sendNative('setInteractive', Boolean(on)),
+  rearm: () => sendNative('rearm'),
+  cursor: () => callNative('cursor'),
+  screens: () => callNative('screensList'),
+  moveScreen: (id) => callNative('moveScreen', id),
+  getConfig: () => callNative('getConfig'),
+  setConfig: (patch) => callNative('setConfig', JSON.stringify(patch)),
+  listSounds: () => callNative('listSounds'),
+  hooksStatus: () => callNative('hooksStatus'),
+  demoWindow: (open) => callNative('demoWindow', Boolean(open)),
+  openMenu: () => sendNative('openMenu'),
+  installHooks: () => callNative('installHooks'),
+  claudeFound: () => callNative('claudeFound'),
+  openClaudeHelp: () => sendNative('openClaudeHelp'),
+  windowsNow: () => callNative('windowsGet'),
+  closePage: (id, key) => callNative('closePage', id, key),
+  trayPlace: () => callNative('guideTray'),
+  openClaudeFolder: () => callNative('guideClaudeFolder'),
+  copyImage: (rect) => callNative('copyImage', JSON.stringify(rect)),
+  
+  // Chat & AI
+  chatStatus: () => callNative('chatStatus'),
+  chatSend: (request) => callNative('chatSend', JSON.stringify(request)),
+  chatStop: (id) => sendNative('chatStop', id),
+  chatMemory: () => callNative('chatMemory'),
+  chatRemember: (history) => sendNative('chatRemember', JSON.stringify(history)),
+  onChatDelta: createListener('chat:delta'),
+
+  // Look & PC Actions (Adapted for Android equivalent services)
+  lookSnap: () => callNative('lookSnap'),
+  lookSay: (request) => callNative('lookSay', JSON.stringify(request)),
+  lookWhere: () => callNative('lookWhere'),
+  cpu: () => callNative('cpuInfo'),
+  pcDo: (req) => callNative('pcDo', JSON.stringify(req)),
+  onPcProgress: createListener('pc:progress'),
+  pcIdle: () => callNative('pcIdle'),
+  
+  // Ollama & Setup
+  openOllama: () => sendNative('openOllama'),
+  setupInfo: () => callNative('setupInfo'),
+  ollamaState: () => callNative('setupOllama'),
+  installOllama: () => callNative('installOllama'),
+  startOllama: () => callNative('startOllama'),
+  pullModel: (name) => callNative('setupPull', name),
+  cancelSetup: () => sendNative('setupCancel'),
+  useProvider: (choice) => callNative('setupUse', choice),
+  keyPage: (provider) => sendNative('setupKeyPage', provider),
+  launchThroughOllama: (integration) => callNative('setupLaunch', integration),
+  onSetupProgress: createListener('setup:progress'),
+
+  // Apps & System
+  openApps: () => callNative('appsList'),
+  findApp: (wanted) => callNative('appsFind', wanted),
+  closeApp: (name, force) => callNative('appsClose', name, Boolean(force)),
+  findLaunch: (text) => callNative('appsFindLaunch', text),
+  launch: (item) => callNative('appsLaunch', item),
+  media: (action) => callNative('appsMedia', action),
+  music: (query) => callNative('appsMusic', query),
+  youtube: (query) => callNative('appsYoutube', query),
+  roblox: (query) => callNative('appsRoblox', query),
+  
+  // Files & Web
+  searchFiles: (query) => callNative('filesSearch', query),
+  openFile: (file, reveal) => callNative('filesOpen', file, Boolean(reveal)),
+  screenshot: () => callNative('filesScreenshot'),
+  webSearch: (query) => callNative('webSearch', query),
+  openSite: (address) => callNative('appsSite', address),
+  focusOverlay: (on) => sendNative('overlayFocus', Boolean(on)),
+};
